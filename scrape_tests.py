@@ -9,6 +9,8 @@ from dialog import Dialog
 import os
 import sys
 
+from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient, __version__
+
 
 api = GhApi(owner=sys.argv[1], repo=sys.argv[2])
 
@@ -47,13 +49,14 @@ runs = set()
 
 available_artifacts = {}
 
-for page in range(6):
+for page in range(0, 10):
     response = api.actions.list_artifacts_for_repo(per_page=100, page=page)
     for artifact in response.artifacts:
         if '.json' in artifact.name:
             if artifact.name not in available_artifacts:
                 available_artifacts[artifact.name] = []
             available_artifacts[artifact.name].append(artifact)
+
 
 choices = []
 index = 1
@@ -103,9 +106,11 @@ if len(sys.argv) > 3 and sys.argv[3] == '--drilldown':
 
                 choices = []
                 for test in sorted(test_results.keys()):
-                    result = 'pass'
+                    result = 'no_data'
                     if 'fail' in [event['Action'] for event in test_results[test] if 'Action' in event]:
                         result = 'fail'
+                    if 'pass' in [event['Action'] for event in test_results[test] if 'Action' in event]:
+                        result = 'pass'
                     choices.append((str(test), result))
                 
                 code, test_choice = d.menu('Select from available test outputs', width=190, height=100, choices=choices)
@@ -118,6 +123,72 @@ if len(sys.argv) > 3 and sys.argv[3] == '--drilldown':
 
     sys.exit(0)
 
+if len(sys.argv) > 3 and sys.argv[3] == '--csv-out-dir':
+
+    run_ids = set([artifact.id for artifact in available_artifacts[chosen_artifact]]) 
+
+    for run in sorted(run_ids, reverse=True):
+        filename = sys.argv[4] + '/' + str(run) + '.csv'
+        with open(filename, 'w') as fh:
+            test_results = {}
+            fh.write('test,run_id,test_suite,run_timestamp,result,output\n')
+            for artifact in available_artifacts[chosen_artifact]:
+                if artifact.id == int(run):
+                    print(artifact)
+                    with ZipFile(cache.get(f"{chosen_artifact}.{run}", artifact.archive_download_url)) as zfile:
+                        for line in zfile.read(zfile.namelist()[0]).decode('utf-8').split('\n'):
+                            if len(line):
+                                event = json.loads(line)
+
+                                key = event["Package"]
+
+                                if 'Test' in event:
+                                    key += ":" + event['Test']
+
+                                runs.add(artifact.id)
+                                if key not in test_results:
+                                    test_results[key] = []
+
+                                test_results[key].append(event)
+
+                        for test in sorted(test_results.keys()):
+                            result = 'no_data'
+                            if 'fail' in [event['Action'] for event in test_results[test] if 'Action' in event]:
+                                result = 'fail'
+                            if 'pass' in [event['Action'] for event in test_results[test] if 'Action' in event]:
+                                result = 'pass'
+                            
+                            output_string = ""
+                            for event in test_results[test]:
+                                if event['Action'] == 'output':
+                                    output_string += event['Output'].replace('\n', '\\n').replace(',', ';')
+
+                            fh.write(f"{test},{run},{chosen_artifact},{artifact.created_at},{result},{output_string}\n")
+                    
+
+                        break
+
+        connect_str = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
+        container_name = 'test-output'
+        blob_service_client = BlobServiceClient.from_connection_string(connect_str)
+
+        # Create a blob client using the local file name as the name for the blob
+        blob_client = blob_service_client.get_blob_client(container=container_name, blob=filename)
+        try:
+            blob_client.delete_blob(delete_snapshots="include")
+        except:
+            pass
+
+        print("\nUploading to Azure Storage as blob:\n\t" + filename)
+
+        # Upload the created file
+        with open(filename, "rb") as data:
+                blob_client.upload_blob(data)
+        
+
+
+
+    sys.exit(0)
 
 for artifact in available_artifacts[chosen_artifact]:
     if artifact.name == chosen_artifact:
