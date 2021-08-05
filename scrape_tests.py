@@ -14,6 +14,13 @@ from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient, _
 
 api = GhApi(owner=sys.argv[1], repo=sys.argv[2])
 
+def terminal_size():
+    import fcntl, termios, struct
+    th, tw, hp, wp = struct.unpack('HHHH',
+        fcntl.ioctl(0, termios.TIOCGWINSZ,
+        struct.pack('HHHH', 0, 0, 0, 0)))
+    return tw, th
+
 class FileCache:
     def __init__(self, path='/tmp/scrape_tests/.cache/'):
         self.cache_dir = path
@@ -42,87 +49,193 @@ class FileCache:
 
         return None
 
+class TestArtifacts:
 
-run_results = {}
-
-runs = set()
-
-available_artifacts = {}
-
-for page in range(0, 10):
-    response = api.actions.list_artifacts_for_repo(per_page=100, page=page)
-    for artifact in response.artifacts:
-        if '.json' in artifact.name:
-            if artifact.name not in available_artifacts:
-                available_artifacts[artifact.name] = []
-            available_artifacts[artifact.name].append(artifact)
+    def __init__(self, start_page = 0):
 
 
-choices = []
-index = 1
-for artifact in sorted(available_artifacts.keys()):
-    choices.append((artifact, ''))
-    index += 1
-d = Dialog(dialog="dialog")
-code, chosen_artifact = d.menu('Select from available test outputs', choices=choices)
+        self.available_artifacts = {}
 
-if code != d.OK:
-    sys.exit(1)
+        self.cache = FileCache()
+        
+        self.next_page = start_page
 
-print(chosen_artifact)
+    def get_available_test_results(self, num_pages=5):
+        for i in range(num_pages):
+            self.get_page()
 
-cache = FileCache()
 
-run_choice = ''
-if len(sys.argv) > 3 and sys.argv[3] == '--drilldown':
-    choices = []
+    def get_page(self):
+        response = api.actions.list_artifacts_for_repo(per_page=100, page=self.next_page)
+        for artifact in response.artifacts:
+            if '.json' in artifact.name:
+                if artifact.name not in self.available_artifacts:
+                    self.available_artifacts[artifact.name] = []
+                self.available_artifacts[artifact.name].append(artifact)
+        self.next_page += 1
 
-    run_ids = set([artifact.id for artifact in available_artifacts[chosen_artifact]]) 
 
-    for run in sorted(run_ids, reverse=True):
-        choices.append((str(run), ''))
-    print(choices)
-    code, run_choice = d.menu('Select from available test outputs', choices=choices)
-    if code != d.OK:
-        sys.exit(1)
-    test_results = {} 
-    for artifact in available_artifacts[chosen_artifact]:
-        if artifact.id == int(run_choice):
-            with ZipFile(cache.get(f"{chosen_artifact}.{run_choice}", artifact.archive_download_url)) as zfile:
-                for line in zfile.read(zfile.namelist()[0]).decode('utf-8').split('\n'):
-                    if len(line):
-                        event = json.loads(line)
+    def top_menu(self):
+        choices = []
+        index = 1
+        for artifact in sorted(self.available_artifacts.keys()):
+            choices.append((artifact, ''))
+            index += 1
+        d = Dialog(dialog="dialog")
+        code, chosen_test_suite = d.menu('Select from available test outputs', choices=choices)
 
-                        key = event["Package"]
+        if code != d.OK:
+            sys.exit(1)
 
-                        if 'Test' in event:
-                            key += ":" + event['Test']
+        run_choice = ''
 
-                        runs.add(artifact.id)
-                        if key not in test_results:
-                            test_results[key] = []
+        return chosen_test_suite
 
-                        test_results[key].append(event)
+    def get_for_test_suite(self, suite_name):
+        return self.available_artifacts[suite_name]
 
+global_cache = FileCache()
+all_artifacts = TestArtifacts()
+
+class TestSuite:
+    def __init__(self, test_suite_name):
+        self.run_results = {}
+        self.name = test_suite_name
+    
+    def generate_results_table(self):
+        self.run_ids = set()
+        for artifact in all_artifacts.get_for_test_suite(self.name):
+            try:
+                with ZipFile(global_cache.get(f"{artifact.name}.{artifact.id}", artifact.archive_download_url)) as zfile:
+                    for index in range(len(zfile.namelist())):
+                        for line in zfile.read(zfile.namelist()[index]).decode('utf-8').split('\n'):
+                            if len(line):
+                                event = json.loads(line)
+
+                                key = event["Package"]
+
+                                self.run_ids.add(artifact.id)
+
+                                if 'Test' in event:
+                                    key += ":" + event['Test']
+
+                                if key not in self.run_results:
+                                    self.run_results[key] = {artifact.id: {'output': ''}}
+                                if artifact.id not in self.run_results[key]:
+                                    self.run_results[key][artifact.id] = {'output': ''}
+
+                                if event['Action'] in ('pass', 'fail'):
+                                    self.run_results[key][artifact.id]['result'] = event['Action']
+
+                                if event['Action'] == 'output':
+                                    self.run_results[key][artifact.id]['output'] += event['Output']
+            except Exception as e:
+                print("Error reading artifact:", artifact, str(e))
+
+
+    def drilldown(self, run):
+        choices = []
+        run_choice = sorted(self.run_ids)[run-1]
+        for run in all_artifacts.get_for_test_suite(self.name):
+            if run.id == run_choice:
+                test_results = { key: self.run_results[key][run_choice]['result'] for key in self.run_results.keys() if run_choice in self.run_results[key] and 'result' in self.run_results[key][run_choice] }
+                print(test_results)
                 choices = []
                 for test in sorted(test_results.keys()):
                     result = 'no_data'
-                    if 'fail' in [event['Action'] for event in test_results[test] if 'Action' in event]:
-                        result = 'fail'
-                    if 'pass' in [event['Action'] for event in test_results[test] if 'Action' in event]:
-                        result = 'pass'
-                    choices.append((str(test), result))
-                
-                code, test_choice = d.menu('Select from available test outputs', width=190, height=100, choices=choices)
 
-                for event in test_results[test_choice]:
-                    if event['Action'] == 'output':
-                        print(event['Output'])
-            break
+                    try:
+                        result = self.run_results[test][run_choice]['result']
+                    except KeyError:
+                        pass
+                    color = ''
+                    if result == 'pass':
+                        color ='\\Zb\\Z2'
+                    if result == 'fail':
+                        color = '\\Zb\\Z1'
+                    choices.append((str(test), color + result))
+        
+                d = Dialog(dialog="dialog")
+
+                code, test_choice = d.menu('Select from available test outputs', width=190, height=100, choices=choices, colors=True)
+
+                print(self.run_results[test_choice][run_choice]['output'])
+                break
+
+    def generate_table_string(self, start = 0, length = 1):
+        output = PrettyTable()
+
+        run_headers = ['Tests']
+        run_failures = 0
+        i = start + 1
+        for run in sorted(self.run_ids)[start:length]:
+            if 'fail' in [self.run_results[test][run]['result'] for test in self.run_results if run in self.run_results[test] and 'result' in self.run_results[test][run]]:
+                run_headers.append(colored(str(i), 'red'))
+                run_failures += 1
+            else:
+                run_headers.append(colored(str(i), 'green'))
+            i += 1
 
 
-    sys.exit(0)
+        output.field_names = run_headers + ["Failure Rate"]
 
+        for test in sorted(self.run_results.keys()):
+            row = [test]
+
+            failures = 0
+            successes = 0
+            for run in sorted(self.run_ids)[start:length]:
+                try:
+                    if self.run_results[test][run]['result'] == 'pass':
+                        row.append(colored('  ', 'grey', 'on_green'))
+                        successes += 1
+                    
+                    if self.run_results[test][run]['result'] == 'fail':
+                        row.append(colored('  ', 'grey', 'on_red'))
+                        failures += 1
+
+                except KeyError:
+                    row.append(colored('  ', 'grey', 'on_white'))
+            if successes + failures == 0:
+                row.append(f"N/A")
+            else:
+                row.append(f"{failures / (successes + failures):.2f}")
+            output.add_row(row)
+
+        output.add_row(run_headers + [f'{run_failures / length:.2f}'])
+
+        output.align = "l"
+
+        return output.get_string()
+
+
+    def print_test_history(self):
+        cw, ch = terminal_size()
+
+        # First generate the table to see how wide it is
+        table = self.generate_table_string(0, 1)
+        table_width = len(table.split("\n")[0])
+
+        # If we've got more space, keep fetching results until we can fill the screen
+        if cw > table_width:
+            print(f"Console width: {cw}, table size: {table_width}. Should have room for  {(cw - table_width)/5} more runs")
+            target_artifacts = int((cw - table_width)/5) + 1
+            while len(all_artifacts.get_for_test_suite(self.name)) < target_artifacts:
+                all_artifacts.get_page()
+            self.generate_results_table()
+            table = self.generate_table_string(0,target_artifacts)
+            table_width = len(table.split("\n")[0])
+
+
+        table = self.generate_table_string(0,target_artifacts)
+
+        print(table)
+
+
+
+
+
+'''
 if len(sys.argv) > 3 and sys.argv[3] == '--csv-out-dir':
 
     run_ids = set([artifact.id for artifact in available_artifacts[chosen_artifact]]) 
@@ -135,38 +248,42 @@ if len(sys.argv) > 3 and sys.argv[3] == '--csv-out-dir':
             for artifact in available_artifacts[chosen_artifact]:
                 if artifact.id == int(run):
                     print(artifact)
-                    with ZipFile(cache.get(f"{chosen_artifact}.{run}", artifact.archive_download_url)) as zfile:
-                        for line in zfile.read(zfile.namelist()[0]).decode('utf-8').split('\n'):
-                            if len(line):
-                                event = json.loads(line)
+                    try:
+                        with ZipFile(cache.get(f"{chosen_artifact}.{run}", artifact.archive_download_url)) as zfile:
+                            for index in range(len(zfile.namelist())):
+                                for line in zfile.read(zfile.namelist()[index]).decode('utf-8').split('\n'):
+                                    if len(line):
+                                        event = json.loads(line)
 
-                                key = event["Package"]
+                                        key = event["Package"]
 
-                                if 'Test' in event:
-                                    key += ":" + event['Test']
+                                        if 'Test' in event:
+                                            key += ":" + event['Test']
 
-                                runs.add(artifact.id)
-                                if key not in test_results:
-                                    test_results[key] = []
+                                        runs.add(artifact.id)
+                                        if key not in test_results:
+                                            test_results[key] = []
 
-                                test_results[key].append(event)
+                                        test_results[key].append(event)
 
-                        for test in sorted(test_results.keys()):
-                            result = 'no_data'
-                            if 'fail' in [event['Action'] for event in test_results[test] if 'Action' in event]:
-                                result = 'fail'
-                            if 'pass' in [event['Action'] for event in test_results[test] if 'Action' in event]:
-                                result = 'pass'
-                            
-                            output_string = ""
-                            for event in test_results[test]:
-                                if event['Action'] == 'output':
-                                    output_string += event['Output'].replace('\n', '\\n').replace(',', ';')
+                            for test in sorted(test_results.keys()):
+                                result = 'no_data'
+                                if 'fail' in [event['Action'] for event in test_results[test] if 'Action' in event]:
+                                    result = 'fail'
+                                if 'pass' in [event['Action'] for event in test_results[test] if 'Action' in event]:
+                                    result = 'pass'
+                                
+                                output_string = ""
+                                for event in test_results[test]:
+                                    if event['Action'] == 'output':
+                                        output_string += event['Output'].replace('\n', '\\n').replace(',', ';')
 
-                            fh.write(f"{test},{run},{chosen_artifact},{artifact.created_at},{result},{output_string}\n")
-                    
+                                fh.write(f"{test},{run},{chosen_artifact},{artifact.created_at},{result},{output_string}\n")
+                        
 
-                        break
+                            break
+                    except:
+                        print("Error reading artifact: %s", artifact)
 
         connect_str = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
         container_name = 'test-output'
@@ -184,70 +301,45 @@ if len(sys.argv) > 3 and sys.argv[3] == '--csv-out-dir':
         # Upload the created file
         with open(filename, "rb") as data:
                 blob_client.upload_blob(data)
-        
-
-
-
     sys.exit(0)
-
-for artifact in available_artifacts[chosen_artifact]:
-    if artifact.name == chosen_artifact:
-
-        with ZipFile(cache.get(f"{artifact.name}.{artifact.id}", artifact.archive_download_url)) as zfile:
-            for line in zfile.read(zfile.namelist()[0]).decode('utf-8').split('\n'):
-                if len(line):
-                    event = json.loads(line)
-
-                    key = event["Package"]
-
-                    if 'Test' in event:
-                        key += ":" + event['Test']
-
-                    runs.add(artifact.id)
-                    if key not in run_results:
-                        run_results[key] = {}
-
-                    if event['Action'] in ('pass', 'fail'):
-                        run_results[key][artifact.id] = event['Action']
-
-output = PrettyTable()
-
-run_headers = ['Tests']
-i = 1
-for run in sorted(runs):
-    if 'fail' in [run_results[test][run] for test in run_results if run in run_results[test]]:
-        run_headers.append(colored(str(i), 'red'))
-    else:
-        run_headers.append(colored(str(i), 'green'))
-    i+=1
+'''
 
 
-output.field_names = run_headers + ["Failure Rate"]
+from getkey import getkey
 
-for test in sorted(run_results.keys()):
-    row = [test]
+all_artifacts.get_available_test_results()
+chosen_test_suite = all_artifacts.top_menu()
 
-    failures = 0
-    successes = 0
-    for run in sorted(runs):
+ts = TestSuite(chosen_test_suite)
+
+ts.generate_results_table()
+ts.print_test_history()
+print('Press "d" to drilldown. "q" to quit. "m" for top menu')
+while True:
+    choice = getkey()
+
+    if choice == "q":
+        sys.exit(0)
+
+    if choice == "o":
+        ts.print_test_history()
+        print('Press "d" to drilldown. "q" to quit. "m" for top menu')
+
+    if choice == "d":
         try:
-            if run_results[test][run] == 'pass':
-                row.append(colored('  ', 'grey', 'on_green'))
-                successes += 1
-            
-            if run_results[test][run] == 'fail':
-                row.append(colored('  ', 'grey', 'on_red'))
-                failures += 1
+            run = int(input("Select run id: "))
+        except ValueError:
+            print('Invalid run id\nPress "d" to drilldown. "q" to quit. "o" for overview')
+            continue
+        ts.drilldown(run)
+        print('Press "d" to drilldown. "q" to quit. "o" for overview. "m" for top menu')
 
-        except KeyError:
-            row.append(colored('  ', 'grey', 'on_white'))
-    if successes + failures == 0:
-        row.append(f"N/A")
-    else:
-        row.append(f"{failures / (successes + failures):.2f}")
-    output.add_row(row)
+    if choice == "m":
+        chosen_test_suite = all_artifacts.top_menu()
 
-output.align = "l"
-print(output)
+        ts = TestSuite(chosen_test_suite)
 
+        ts.generate_results_table()
+        ts.print_test_history()
+        print('Press "d" to drilldown. "q" to quit. "m" for top menu')
 
