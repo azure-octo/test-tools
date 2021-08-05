@@ -158,9 +158,12 @@ class TestSuite:
                 d = Dialog(dialog="dialog")
 
                 code, test_choice = d.menu('Select from available test outputs', width=190, height=100, choices=choices, colors=True)
+        
+                if code != d.OK:
+                    return False
 
                 print(self.run_results[test_choice][run_choice]['output'])
-                break
+                return True
 
     def generate_table_string(self, start = 0, length = 1):
         output = PrettyTable()
@@ -331,8 +334,11 @@ while True:
         except ValueError:
             print('Invalid run id\nPress "d" to drilldown. "q" to quit. "o" for overview')
             continue
-        ts.drilldown(run)
-        print('Press "d" to drilldown. "q" to quit. "o" for overview. "m" for top menu')
+        if not ts.drilldown(run):
+            ts.print_test_history()
+            print('Press "d" to drilldown. "q" to quit. "m" for top menu')
+        else:
+            print('Press "q" to quit. "o" for overview. "m" for top menu')
 
     if choice == "m":
         chosen_test_suite = all_artifacts.top_menu()
