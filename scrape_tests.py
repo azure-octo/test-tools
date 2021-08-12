@@ -29,15 +29,13 @@ class FileCache:
     def get(self, key, fetch_url):
         filename = self.cache_dir + '/' + key + ".zip"
 
-        print("Would download", fetch_url)
-
         try:
             os.stat(filename)
             return filename
         except FileNotFoundError:
             pass
 
-
+        print(f"{fetch_url} not cached. Downloading.", fetch_url)
         headers = {"Authorization": f"token {os.getenv('GITHUB_TOKEN')}"}
         response = requests.get(fetch_url, headers=headers)
 
@@ -141,7 +139,7 @@ class TestSuite:
                 test_results = { key: self.run_results[key][run_choice]['result'] for key in self.run_results.keys() if run_choice in self.run_results[key] and 'result' in self.run_results[key][run_choice] }
                 print(test_results)
                 choices = []
-                for test in sorted(test_results.keys()):
+                for test in sorted(self.run_results.keys()):
                     result = 'no_data'
 
                     try:
@@ -233,80 +231,6 @@ class TestSuite:
         table = self.generate_table_string(0,target_artifacts)
 
         print(table)
-
-
-
-
-
-'''
-if len(sys.argv) > 3 and sys.argv[3] == '--csv-out-dir':
-
-    run_ids = set([artifact.id for artifact in available_artifacts[chosen_artifact]]) 
-
-    for run in sorted(run_ids, reverse=True):
-        filename = sys.argv[4] + '/' + str(run) + '.csv'
-        with open(filename, 'w') as fh:
-            test_results = {}
-            fh.write('test,run_id,test_suite,run_timestamp,result,output\n')
-            for artifact in available_artifacts[chosen_artifact]:
-                if artifact.id == int(run):
-                    print(artifact)
-                    try:
-                        with ZipFile(cache.get(f"{chosen_artifact}.{run}", artifact.archive_download_url)) as zfile:
-                            for index in range(len(zfile.namelist())):
-                                for line in zfile.read(zfile.namelist()[index]).decode('utf-8').split('\n'):
-                                    if len(line):
-                                        event = json.loads(line)
-
-                                        key = event["Package"]
-
-                                        if 'Test' in event:
-                                            key += ":" + event['Test']
-
-                                        runs.add(artifact.id)
-                                        if key not in test_results:
-                                            test_results[key] = []
-
-                                        test_results[key].append(event)
-
-                            for test in sorted(test_results.keys()):
-                                result = 'no_data'
-                                if 'fail' in [event['Action'] for event in test_results[test] if 'Action' in event]:
-                                    result = 'fail'
-                                if 'pass' in [event['Action'] for event in test_results[test] if 'Action' in event]:
-                                    result = 'pass'
-                                
-                                output_string = ""
-                                for event in test_results[test]:
-                                    if event['Action'] == 'output':
-                                        output_string += event['Output'].replace('\n', '\\n').replace(',', ';')
-
-                                fh.write(f"{test},{run},{chosen_artifact},{artifact.created_at},{result},{output_string}\n")
-                        
-
-                            break
-                    except:
-                        print("Error reading artifact: %s", artifact)
-
-        connect_str = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
-        container_name = 'test-output'
-        blob_service_client = BlobServiceClient.from_connection_string(connect_str)
-
-        # Create a blob client using the local file name as the name for the blob
-        blob_client = blob_service_client.get_blob_client(container=container_name, blob=filename)
-        try:
-            blob_client.delete_blob(delete_snapshots="include")
-        except:
-            pass
-
-        print("\nUploading to Azure Storage as blob:\n\t" + filename)
-
-        # Upload the created file
-        with open(filename, "rb") as data:
-                blob_client.upload_blob(data)
-    sys.exit(0)
-'''
-
 
 from getkey import getkey
 
