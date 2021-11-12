@@ -23,4 +23,11 @@ export GITHUB_TOKEN=<YOUR-TOKEN-HERE>
 python3 scrape_tests.py dapr dapr
 ```
 
+## Test output grep
+
+You can scrape the output of one or more test suites for a particular regex.
+```
+python3 grep_test_output.py dapr cli ".*expected.*Running.*"
+```
+
 ## TODO: Document log scraper

@@ -53,6 +53,7 @@ class TestArtifacts:
 
 
         self.available_artifacts = {}
+        self.container_logs = {}
 
         self.cache = FileCache()
         
@@ -66,7 +67,7 @@ class TestArtifacts:
     def get_page(self):
         response = api.actions.list_artifacts_for_repo(per_page=100, page=self.next_page)
         for artifact in response.artifacts:
-            if '.json' in artifact.name:
+            if '.json' in artifact.name or '_test' in artifact.name:
                 if artifact.name not in self.available_artifacts:
                     self.available_artifacts[artifact.name] = []
                 self.available_artifacts[artifact.name].append(artifact)
@@ -103,11 +104,11 @@ class TestSuite:
     def generate_results_table(self):
         self.run_ids = set()
         for artifact in all_artifacts.get_for_test_suite(self.name):
-            try:
-                with ZipFile(global_cache.get(f"{artifact.name}.{artifact.id}", artifact.archive_download_url)) as zfile:
-                    for index in range(len(zfile.namelist())):
+            with ZipFile(global_cache.get(f"{artifact.name}.{artifact.id}", artifact.archive_download_url)) as zfile:
+                for index in range(len(zfile.namelist())):
+                    try:
                         for line in zfile.read(zfile.namelist()[index]).decode('utf-8').split('\n'):
-                            if len(line):
+                            if len(line) and ".json" in zfile.namelist()[index]:
                                 event = json.loads(line)
 
                                 key = event["Package"]
@@ -127,13 +128,13 @@ class TestSuite:
 
                                 if event['Action'] == 'output':
                                     self.run_results[key][artifact.id]['output'] += event['Output']
-            except Exception as e:
-                print("Error reading artifact:", artifact, str(e))
+                    except Exception as e:
+                        print("Error reading artifact:", artifact, str(e), zfile.namelist()[index], line)
 
 
     def drilldown(self, run):
         choices = []
-        run_choice = sorted(self.run_ids)[run-1]
+        run_choice = sorted(self.run_ids, reverse=True)[run-1]
         for run in all_artifacts.get_for_test_suite(self.name):
             if run.id == run_choice:
                 test_results = { key: self.run_results[key][run_choice]['result'] for key in self.run_results.keys() if run_choice in self.run_results[key] and 'result' in self.run_results[key][run_choice] }
@@ -169,7 +170,7 @@ class TestSuite:
         run_headers = ['Tests']
         run_failures = 0
         i = start + 1
-        for run in sorted(self.run_ids)[start:length]:
+        for run in sorted(self.run_ids, reverse=True)[start:length]:
             if 'fail' in [self.run_results[test][run]['result'] for test in self.run_results if run in self.run_results[test] and 'result' in self.run_results[test][run]]:
                 run_headers.append(colored(str(i), 'red'))
                 run_failures += 1
@@ -185,7 +186,7 @@ class TestSuite:
 
             failures = 0
             successes = 0
-            for run in sorted(self.run_ids)[start:length]:
+            for run in sorted(self.run_ids, reverse=True)[start:length]:
                 try:
                     if self.run_results[test][run]['result'] == 'pass':
                         row.append(colored('  ', 'grey', 'on_green'))
