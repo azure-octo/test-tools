@@ -38,7 +38,11 @@ class SingleTestSuiteView(TestArtifacts):
         return chosen_test_suite
 
     def get_for_test_suite(self, suite_name):
-        return self.available_artifacts[suite_name]
+        for artifact in self.available_artifacts[suite_name]:
+            yield artifact
+        
+        for artifact in self.get_next_artifact(suite_name):
+            yield artifact
 
 global_cache = FileCache()
 all_artifacts = SingleTestSuiteView()
@@ -48,10 +52,15 @@ class TestSuite:
         self.run_results = {}
         self.name = test_suite_name
     
-    def generate_results_table(self):
-        self.run_ids = set()
-        for artifact in all_artifacts.get_for_test_suite(self.name):
+    def generate_results_table(self, artifacts, prefetch_artifacts, batch_size=10):
+        artifact_count = 0
+        for artifact in artifacts:
+            global_cache.prefetch(prefetch_artifacts)
+            if artifact_count > batch_size:
+                return
+            artifact_count+=1
             with ZipFile(global_cache.get(f"{artifact.name}.{artifact.id}", artifact.archive_download_url)) as zfile:
+
                 for index in range(len(zfile.namelist())):
                     try:
                         for line in zfile.read(zfile.namelist()[index]).decode('utf-8').split('\n'):
@@ -76,7 +85,7 @@ class TestSuite:
                                 if event['Action'] == 'output':
                                     self.run_results[key][artifact.id]['output'] += event['Output']
                     except Exception as e:
-                        print("Error reading artifact:", artifact, str(e), zfile.namelist()[index], line)
+                        sys.stdout.write(f"Error reading artifact: {artifact} {str(e)} {zfile.namelist()[index]} {line}\n")
 
 
     def drilldown(self, run):
@@ -159,19 +168,23 @@ class TestSuite:
 
 
     def print_test_history(self):
+        self.run_ids = set()
         cw, ch = terminal_size()
 
+        prefetch_artifacts = all_artifacts.get_for_test_suite(self.name)
+        artifacts = all_artifacts.get_for_test_suite(self.name)
+        self.generate_results_table(prefetch_artifacts, artifacts)
         # First generate the table to see how wide it is
         table = self.generate_table_string(0, 1)
         table_width = len(table.split("\n")[0])
+        
 
         # If we've got more space, keep fetching results until we can fill the screen
         if cw > table_width:
-            print(f"Console width: {cw}, table size: {table_width}. Should have room for  {(cw - table_width)/5} more runs")
+            sys.stderr.write(f"Console width: {cw}, table size: {table_width}. Should have room for  {(cw - table_width)/5} more runs\n")
             target_artifacts = int((cw - table_width)/5) + 1
-            while len(all_artifacts.get_for_test_suite(self.name)) < target_artifacts:
-                all_artifacts.get_page()
-            self.generate_results_table()
+            while len(self.run_ids) < target_artifacts:
+                self.generate_results_table(prefetch_artifacts, artifacts)
             table = self.generate_table_string(0,target_artifacts)
             table_width = len(table.split("\n")[0])
 
@@ -187,7 +200,6 @@ chosen_test_suite = all_artifacts.top_menu()
 
 ts = TestSuite(chosen_test_suite)
 
-ts.generate_results_table()
 ts.print_test_history()
 print('Press "d" to drilldown. "q" to quit. "m" for top menu')
 while True:
@@ -217,7 +229,7 @@ while True:
 
         ts = TestSuite(chosen_test_suite)
 
-        ts.generate_results_table()
+        #ts.generate_results_table()
         ts.print_test_history()
         print('Press "d" to drilldown. "q" to quit. "m" for top menu')
 
