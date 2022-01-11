@@ -6,6 +6,8 @@ from termcolor import colored
 from prettytable import PrettyTable
 from dialog import Dialog
 from utils import FileCache, TestArtifacts
+from dateutil import parser
+from datetime import datetime, timezone
 import os
 import sys
 import re
@@ -15,6 +17,7 @@ import time
 
 api = GhApi(owner=sys.argv[1], repo=sys.argv[2])
 
+'''
 class AsyncRequestor(threading.Thread):
     def run(self):
         response = None
@@ -33,6 +36,7 @@ class AsyncRequestor(threading.Thread):
     def join(self):
         threading.Thread.join(self)
         return self.response
+'''
 
 class MultiSelectArtifactGenerator(TestArtifacts):
     def top_menu(self):
@@ -73,14 +77,19 @@ class TestSuite:
         self.run_results = {}
         self.names = test_suite_names
     
-    def grep_results(self, regex_string):
-        #try:
-        with open(output_filename, "w") as fh:
-            self.print_outputs(regex_string, [sys.stdout, fh])
-        #except:
-        #    self.print_outputs(regex_string, [sys.stdout])
+    def print_results(self):
+        output = PrettyTable()
 
-    def print_outputs(self, regex_string, outputs):
+        output.field_names = ['Test', 'Failure Count']
+
+
+        for test in sorted(self.run_results.keys(), key=lambda x:self.run_results[x]):
+            output.add_row([test, self.run_results[test]])
+        output.align = "l"
+
+        print(output.get_string())
+
+    def count_failures(self, duration_days):
         prefetch_artifacts = all_artifacts.get_for_test_suite(self.names)
     
         for filepath, artifact in global_cache.prefetch(prefetch_artifacts):
@@ -90,13 +99,18 @@ class TestSuite:
                         for line in zfile.read(zfile.namelist()[index]).decode('utf-8').split('\n'):
                             if len(line) and ".json" in zfile.namelist()[index]:
                                 event = json.loads(line)
+                                event_time = parser.parse(event['Time'])
+                                if (datetime.now(timezone.utc) - event_time).days > duration_days:
+                                    self.print_results()  
+                                    return
+                                if event['Action'] == 'fail':
+                                    if 'Test' in event:
+                                        test_name = event['Test']
 
-                                if event['Action'] == 'output':
-                                    regex = re.compile(regex_string)
-                                    match_obj = regex.match(event['Output'])
-                                    if match_obj is not None:
-                                        for output in outputs:
-                                            output.write(f"{artifact.name} {line}\n")
+                                        if test_name not in self.run_results:
+                                            self.run_results[test_name] = 0
+
+                                        self.run_results[test_name] += 1
 
                     except Exception as e:
                         print("Error reading artifact:", artifact, str(e), zfile.namelist()[index], line)
@@ -109,4 +123,4 @@ chosen_test_suites = all_artifacts.top_menu()
 
 ts = TestSuite(chosen_test_suites)
 
-ts.grep_results(sys.argv[3])
+ts.count_failures(int(sys.argv[3]))

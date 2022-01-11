@@ -27,7 +27,15 @@ python3 scrape_tests.py dapr dapr
 
 You can scrape the output of one or more test suites for a particular regex.
 ```
-python3 grep_test_output.py dapr cli ".*expected.*Running.*"
+python3 grep_test_output.py dapr cli ".*expected.*Running.*" output.txt
+```
+
+## Failure counts
+
+To get the test failure counts by test for the last N days
+
+```
+python3 failure_counts.py dapr dapr 4 
 ```
 
 ## TODO: Document log scraper

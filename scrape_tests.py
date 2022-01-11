@@ -38,55 +38,64 @@ class SingleTestSuiteView(TestArtifacts):
         return chosen_test_suite
 
     def get_for_test_suite(self, suite_name):
-        for artifact in self.available_artifacts[suite_name]:
-            yield artifact
-        
-        for artifact in self.get_next_artifact(suite_name):
-            yield artifact
+        position = 0
+        while True:
+            if position >= len(self.available_artifacts[suite_name]):
+                self.get_artifacts(batch_size=200)
+                continue
+
+            yield self.available_artifacts[suite_name][position]
+            position += 1
 
 global_cache = FileCache()
 all_artifacts = SingleTestSuiteView()
+
+object_process_counts = {}
 
 class TestSuite:
     def __init__(self, test_suite_name):
         self.run_results = {}
         self.name = test_suite_name
+        self.prefetch_artifacts = all_artifacts.get_for_test_suite(self.name)
+        self.run_ids = set()
     
-    def generate_results_table(self, artifacts, prefetch_artifacts, batch_size=10):
-        artifact_count = 0
-        for artifact in artifacts:
-            global_cache.prefetch(prefetch_artifacts)
-            if artifact_count > batch_size:
+    def generate_results_table(self, num_columns=1):
+        if len(self.run_ids) > num_columns:
+            return
+        for filepath, artifact in global_cache.prefetch(self.prefetch_artifacts):
+            try:
+                with ZipFile(filepath) as zfile:
+                    for index in range(len(zfile.namelist())):
+                        try:
+                            for line in zfile.read(zfile.namelist()[index]).decode('utf-8').split('\n'):
+                                if len(line) and ".json" in zfile.namelist()[index]:
+                                    event = json.loads(line)
+
+                                    key = event["Package"]
+
+                                    self.run_ids.add(artifact.id)
+
+                                    if 'Test' in event:
+                                        key += ":" + event['Test']
+
+                                    if key not in self.run_results:
+                                        self.run_results[key] = {artifact.id: {'output': ''}}
+                                    if artifact.id not in self.run_results[key]:
+                                        self.run_results[key][artifact.id] = {'output': ''}
+
+                                    if event['Action'] in ('pass', 'fail'):
+                                        self.run_results[key][artifact.id]['result'] = event['Action']
+
+                                    if event['Action'] == 'output':
+                                        self.run_results[key][artifact.id]['output'] += event['Output']
+                        except Exception as e:
+                            sys.stdout.write(f"Error reading artifact: {artifact} {str(e)} {zfile.namelist()[index]}\n")
+
+            except Exception as e:
+                sys.stdout.write(f"Error reading artifact: {artifact} {str(e)}\n")
+            
+            if len(self.run_ids) > num_columns:
                 return
-            artifact_count+=1
-            with ZipFile(global_cache.get(f"{artifact.name}.{artifact.id}", artifact.archive_download_url)) as zfile:
-
-                for index in range(len(zfile.namelist())):
-                    try:
-                        for line in zfile.read(zfile.namelist()[index]).decode('utf-8').split('\n'):
-                            if len(line) and ".json" in zfile.namelist()[index]:
-                                event = json.loads(line)
-
-                                key = event["Package"]
-
-                                self.run_ids.add(artifact.id)
-
-                                if 'Test' in event:
-                                    key += ":" + event['Test']
-
-                                if key not in self.run_results:
-                                    self.run_results[key] = {artifact.id: {'output': ''}}
-                                if artifact.id not in self.run_results[key]:
-                                    self.run_results[key][artifact.id] = {'output': ''}
-
-                                if event['Action'] in ('pass', 'fail'):
-                                    self.run_results[key][artifact.id]['result'] = event['Action']
-
-                                if event['Action'] == 'output':
-                                    self.run_results[key][artifact.id]['output'] += event['Output']
-                    except Exception as e:
-                        sys.stdout.write(f"Error reading artifact: {artifact} {str(e)} {zfile.namelist()[index]} {line}\n")
-
 
     def drilldown(self, run):
         choices = []
@@ -94,7 +103,6 @@ class TestSuite:
         for run in all_artifacts.get_for_test_suite(self.name):
             if run.id == run_choice:
                 test_results = { key: self.run_results[key][run_choice]['result'] for key in self.run_results.keys() if run_choice in self.run_results[key] and 'result' in self.run_results[key][run_choice] }
-                print(test_results)
                 choices = []
                 for test in sorted(self.run_results.keys()):
                     result = 'no_data'
@@ -168,12 +176,9 @@ class TestSuite:
 
 
     def print_test_history(self):
-        self.run_ids = set()
         cw, ch = terminal_size()
-
-        prefetch_artifacts = all_artifacts.get_for_test_suite(self.name)
-        artifacts = all_artifacts.get_for_test_suite(self.name)
-        self.generate_results_table(prefetch_artifacts, artifacts)
+        if len(self.run_results) == 0:
+            self.generate_results_table()
         # First generate the table to see how wide it is
         table = self.generate_table_string(0, 1)
         table_width = len(table.split("\n")[0])
@@ -181,10 +186,11 @@ class TestSuite:
 
         # If we've got more space, keep fetching results until we can fill the screen
         if cw > table_width:
-            sys.stderr.write(f"Console width: {cw}, table size: {table_width}. Should have room for  {(cw - table_width)/5} more runs\n")
-            target_artifacts = int((cw - table_width)/5) + 1
+            remaining_runs = int((cw - table_width)/5)
+            sys.stderr.write(f"Console width: {cw}, table size: {table_width}. Should have room for  {remaining_runs} more test runs\n")
+            target_artifacts = remaining_runs + 1
             while len(self.run_ids) < target_artifacts:
-                self.generate_results_table(prefetch_artifacts, artifacts)
+                self.generate_results_table(target_artifacts)
             table = self.generate_table_string(0,target_artifacts)
             table_width = len(table.split("\n")[0])
 
@@ -197,10 +203,9 @@ from getkey import getkey
 
 all_artifacts.get_available_test_results()
 chosen_test_suite = all_artifacts.top_menu()
+all_test_suites = {chosen_test_suite: TestSuite(chosen_test_suite)}
 
-ts = TestSuite(chosen_test_suite)
-
-ts.print_test_history()
+all_test_suites[chosen_test_suite].print_test_history()
 print('Press "d" to drilldown. "q" to quit. "m" for top menu')
 while True:
     choice = getkey()
@@ -209,7 +214,7 @@ while True:
         sys.exit(0)
 
     if choice == "o":
-        ts.print_test_history()
+        all_test_suites[chosen_test_suite].print_test_history()
         print('Press "d" to drilldown. "q" to quit. "m" for top menu')
 
     if choice == "d":
@@ -218,8 +223,8 @@ while True:
         except ValueError:
             print('Invalid run id\nPress "d" to drilldown. "q" to quit. "o" for overview')
             continue
-        if not ts.drilldown(run):
-            ts.print_test_history()
+        if not all_test_suites[chosen_test_suite].drilldown(run):
+            all_test_suites[chosen_test_suite].print_test_history()
             print('Press "d" to drilldown. "q" to quit. "m" for top menu')
         else:
             print('Press "q" to quit. "o" for overview. "m" for top menu')
@@ -227,9 +232,10 @@ while True:
     if choice == "m":
         chosen_test_suite = all_artifacts.top_menu()
 
-        ts = TestSuite(chosen_test_suite)
+        if chosen_test_suite not in all_test_suites:
+            all_test_suites[chosen_test_suite] = TestSuite(chosen_test_suite)
 
         #ts.generate_results_table()
-        ts.print_test_history()
+        all_test_suites[chosen_test_suite].print_test_history()
         print('Press "d" to drilldown. "q" to quit. "m" for top menu')
 
