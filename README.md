@@ -1,5 +1,7 @@
 # Dapr Test Dashboard
 
+This is a set of CLI tools specifically built for the parsing github actions test output for the dapr project. Useful if you are a dapr maintainer but probably not for anybody else.
+
 ## Install
 
 Install the dialog package
