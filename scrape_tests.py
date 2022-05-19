@@ -195,7 +195,7 @@ class TestSuite:
             table_width = len(table.split("\n")[0])
 
 
-        table = self.generate_table_string(0,target_artifacts)
+        table = self.generate_table_string(0,table_width)
 
         print(table)
 
